@@ -158,7 +158,7 @@ def stitch_and_export(tiles, zoom: int, output_dir: str, png_path: str, tiff_pat
 
 
 async def main():
-    parser = argparse.ArgumentParser(description=description="Stitch West Lafayette USGS imagery")
+    parser = argparse.ArgumentParser(description="Stitch West Lafayette USGS imagery")
     parser.add_argument("--zoom", type=int, default=DEFAULT_ZOOM, choices=range(13, 19))
     parser.add_argument("--place", default=PLACE_NAME)
     parser.add_argument("--tiles", default=OUTPUT_DIR)

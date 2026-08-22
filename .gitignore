@@ -1,0 +1,6 @@
+west_lafayette_tiles/
+*.tif
+West_Lafayette_HighRes.png
+__pycache__/
+.venv/
+*.pyc

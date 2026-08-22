@@ -1,27 +1,30 @@
 #!/usr/bin/env python3
 """IREZ — high-res aerial mosaic for West Lafayette, Indiana.
 
-Why z17/z18 404 on USGS?
-  USGSImageryOnly's practical max scale is ~1:9,028 (LOD 16). Tiles at z17+
-  often return HTTP 404 for this area even though LODs are listed.
+Primary source: Indiana GIO current ortho cache (CC0), ~6-inch class imagery.
+USGSImageryOnly only serves usable tiles through zoom 16 for this area;
+z17+ commonly returns HTTP 404.
 
-Better quality (tested over Purdue campus):
-  - indiana  Indiana GIO current ortho cache (CC0) — works z16–z19
-  - esri     Esri World Imagery — works z16–z19 (check Esri ToS for bulk use)
-  - usgs     USGS National Map — reliable through z16 only
-  - auto     try indiana → esri → usgs per tile
+Sources (tested over Purdue campus):
+  indiana  Indiana GIO L19v4 cache — z16–z19, CC0
+  esri     Esri World Imagery — z16–z19 (check ToS for bulk use)
+  usgs     USGS National Map — reliable through z16 only
+  auto     try indiana → esri → usgs per tile
 
 Usage:
     pip install -r requirements.txt
 
-    # Best free quality for Indiana (recommended)
+    # Best free quality (recommended)
     python stitch_west_lafayette.py --source indiana --zoom 18 --crop campus
 
-    # Full city at z16 (USGS works)
+    # Full city at z17
+    python stitch_west_lafayette.py --source indiana --zoom 17 --crop city
+
+    # USGS path (max practical zoom 16)
     python stitch_west_lafayette.py --source usgs --zoom 16
 
-    # Auto fallback chain
-    python stitch_west_lafayette.py --source auto --zoom 18 --crop campus
+Docs: https://imagery.gio.in.gov/
+REST: https://di-ingov.img.arcgis.com/arcgis/rest/services/
 """
 
 from __future__ import annotations
@@ -29,7 +32,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-from typing import Iterable
 
 import aiofiles
 import aiohttp
@@ -47,17 +49,17 @@ USER_AGENT = "IREZ/1.0 (West Lafayette aerial stitcher; https://github.com/Ig0tU
 CAMPUS_BBOX = (-86.928, 40.4185, -86.903, 40.4385)
 
 SOURCES: dict[str, str] = {
-    # Indiana GIO current ortho cache — 0.5 ft class imagery, CC0
+    # Indiana GIO current ortho cache — ~15 cm class, CC0
     "indiana": (
         "https://di-ingov.img.arcgis.com/arcgis/rest/services/"
         "CacheWebMercator/IndianaCurrentImageryCacheL19v4/MapServer/tile/{z}/{y}/{x}"
     ),
-    # Esri World Imagery — deep zoom, review terms for bulk download
+    # Esri World Imagery — deep zoom; review terms for bulk offline mosaics
     "esri": (
         "https://server.arcgisonline.com/ArcGIS/rest/services/"
         "World_Imagery/MapServer/tile/{z}/{y}/{x}"
     ),
-    # USGS National Map — public domain, native detail effectively stops ~z16 here
+    # USGS National Map — public domain; native detail effectively stops ~z16 here
     "usgs": (
         "https://basemap.nationalmap.gov/arcgis/rest/services/"
         "USGSImageryOnly/MapServer/tile/{z}/{y}/{x}"
@@ -94,7 +96,6 @@ def resolve_bounds(crop: str, place_name: str):
         print(f"[1/5] Using Purdue campus crop: {b}")
         return box(*b), b
     if crop == "bbox":
-        # tight city bbox without full polygon geocode
         b = (-86.9624434, 40.4000158, -86.8869841, 40.4895414)
         print(f"[1/5] Using fixed city bbox: {b}")
         return box(*b), b
@@ -113,23 +114,16 @@ def calculate_tile_grid(bounds, zoom: int):
     height = (max_y - min_y + 1) * 256
     print(f"    Tiles: {len(tiles)}  canvas: {width} × {height} px")
     if zoom >= 17 and len(tiles) > 800:
-        print(
-            "    tip: full-city z17+ is large — try --crop campus or --zoom 16"
-        )
+        print("    tip: full-city z17+ is large — try --crop campus or --zoom 16")
     return tiles
 
 
 def source_urls(source: str, z: int, y: int, x: int) -> list[tuple[str, str]]:
-    """Return ordered (name, url) candidates for one tile."""
     if source == "auto":
         names = AUTO_CHAIN
     else:
         names = (source,)
-    out: list[tuple[str, str]] = []
-    for name in names:
-        tmpl = SOURCES[name]
-        out.append((name, tmpl.format(z=z, y=y, x=x)))
-    return out
+    return [(name, SOURCES[name].format(z=z, y=y, x=x)) for name in names]
 
 
 async def fetch_tile(
@@ -140,9 +134,8 @@ async def fetch_tile(
     retries: int = 2,
 ):
     x, y, z = tile.x, tile.y, tile.z
-    file_path = os.path.join(output_dir, f"{source}_{z}_{x}_{y}.jpg")
-    if source == "auto":
-        file_path = os.path.join(output_dir, f"auto_{z}_{x}_{y}.jpg")
+    prefix = "auto" if source == "auto" else source
+    file_path = os.path.join(output_dir, f"{prefix}_{z}_{x}_{y}.jpg")
     if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
         return file_path
 
@@ -157,13 +150,12 @@ async def fetch_tile(
                     if response.status == 200:
                         data = await response.read()
                         if len(data) < 500:
-                            # tiny body often means empty/error tile
                             continue
                         async with aiofiles.open(file_path, "wb") as handle:
                             await handle.write(data)
                         return file_path
                     if response.status == 404:
-                        break  # try next source
+                        break
                     await asyncio.sleep(0.4 * (attempt + 1))
             except asyncio.CancelledError:
                 raise
@@ -326,4 +318,6 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\nInterrupted — partial tiles are kept in the cache dir; re-run to resume.")
+        print(
+            "\nInterrupted — partial tiles are kept in the cache dir; re-run to resume."
+        )
